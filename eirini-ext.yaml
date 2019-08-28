@@ -1,0 +1,93 @@
+---
+apiVersion: v1
+kind: List
+items:
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      creationTimestamp: null
+      name: "eirini-ext"
+    rules:
+    - apiGroups:
+      - '*'
+      resources:
+      - '*'
+      verbs:
+      - '*'
+  - kind: ClusterRoleBinding
+    apiVersion: rbac.authorization.k8s.io/v1
+    metadata:
+      name: "eirini-ext"
+      namespace: "default"
+    roleRef:
+      kind: ClusterRole
+      name: "eirini-ext"
+      apiGroup: rbac.authorization.k8s.io
+    subjects:
+    - kind: ServiceAccount
+      name: "eirini-ext"
+      namespace: "default"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: eirini-ext-service
+spec:
+  type: LoadBalancer
+  selector:
+    app: eirini-ext
+  ports:
+  - protocol: TCP
+    port: 4545
+    targetPort: 4545
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: "eirini-ext"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: eirini-ext
+  labels:
+    app: eirini-ext
+spec:
+  serviceAccountName: "eirini-ext"
+  containers:
+   - image: gcr.io/cff-diego-persistence/eirini-ext
+     name: eirini-ext
+     #imagePullPolicy: Never
+  restartPolicy: Always
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: eirini-ext
+subjects:
+- kind: ServiceAccount
+  name: eirini-ext
+roleRef:
+  kind: Role
+  name: eirini-ext
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  creationTimestamp: null
+  name: eirini-ext
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  - services
+  - endpoints
+  - persistentvolumeclaims
+  - events
+  - configmaps
+  - secrets
+  - namespaces
+  verbs:
+    - '*'
