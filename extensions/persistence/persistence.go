@@ -10,7 +10,10 @@ import (
 
 	eirinix "github.com/SUSE/eirinix"
 	"go.uber.org/zap"
+	appv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission/types"
 )
@@ -52,16 +55,35 @@ func containsContainerMount(containermounts []corev1.VolumeMount, mount string) 
 }
 
 // AppendMounts appends volumes that are specified in VCAP_SERVICES to the pod and to the container given as arguments
-func (s VcapServices) AppendMounts(patchedPod *corev1.Pod, c *corev1.Container) {
+func (s VcapServices) AppendMounts(patchedSet *appv1.StatefulSet, c *corev1.Container) {
 	for _, volumeService := range s.ServiceMap {
 		for _, volumeMount := range volumeService.VolumeMounts {
 			if !containsContainerMount(c.VolumeMounts, volumeService.Credentials.VolumeID) {
-				patchedPod.Spec.Volumes = append(patchedPod.Spec.Volumes, corev1.Volume{
-					Name: volumeService.Credentials.VolumeID,
-					VolumeSource: corev1.VolumeSource{
-						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-							ClaimName: volumeService.Credentials.VolumeID,
+				//				patchedPod.Spec.Volumes = append(patchedPod.Spec.Volumes, corev1.Volume{
+				//					Name: volumeService.Credentials.VolumeID,
+				//					VolumeSource: corev1.VolumeSource{
+				//						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				//							ClaimName: volumeService.Credentials.VolumeID,
+				//						},
+				//					},
+				//				})
+				quantity, err := resource.ParseQuantity("1Gi")
+				if err != nil {
+					panic(err.Error())
+				}
+				storageClass := "standard"
+				patchedSet.Spec.VolumeClaimTemplates = append(patchedSet.Spec.VolumeClaimTemplates, corev1.PersistentVolumeClaim{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: volumeService.Credentials.VolumeID,
+					},
+					Spec: corev1.PersistentVolumeClaimSpec{
+						AccessModes: []corev1.PersistentVolumeAccessMode{"ReadWriteOnce"},
+						Resources: corev1.ResourceRequirements{
+							Requests: corev1.ResourceList{
+								"storage": quantity,
+							},
 						},
+						StorageClassName: &storageClass,
 					},
 				})
 
@@ -70,26 +92,27 @@ func (s VcapServices) AppendMounts(patchedPod *corev1.Pod, c *corev1.Container) 
 					MountPath: volumeMount.ContainerDir,
 				})
 				u := int64(0)
-				patchedPod.Spec.InitContainers = append(patchedPod.Spec.InitContainers, corev1.Container{
-					SecurityContext: &corev1.SecurityContext{RunAsUser: &u},
-					Name:            fmt.Sprintf("eirini-persi-%s", volumeService.Credentials.VolumeID),
-					Image:           c.Image,
-					VolumeMounts:    c.VolumeMounts,
-					Command: []string{
-						"sh",
-						"-c",
-						fmt.Sprintf("chown -R vcap:vcap %s", volumeMount.ContainerDir),
-					},
-				})
+				patchedSet.Spec.Template.Spec.InitContainers =
+					append(patchedSet.Spec.Template.Spec.InitContainers, corev1.Container{
+						SecurityContext: &corev1.SecurityContext{RunAsUser: &u},
+						Name:            fmt.Sprintf("eirini-persi-%s", volumeService.Credentials.VolumeID),
+						Image:           c.Image,
+						VolumeMounts:    c.VolumeMounts,
+						Command: []string{
+							"sh",
+							"-c",
+							fmt.Sprintf("chown -R vcap:vcap %s", volumeMount.ContainerDir),
+						},
+					})
 			}
 		}
 	}
 }
 
 // MountVcapVolumes alters the pod given as argument with the required volumes mounted
-func (ext *Extension) MountVcapVolumes(patchedPod *corev1.Pod) error {
-	for i := range patchedPod.Spec.Containers {
-		c := &patchedPod.Spec.Containers[i]
+func (ext *Extension) MountVcapVolumes(patchedSet *appv1.StatefulSet) error {
+	for i := range patchedSet.Spec.Template.Spec.Containers {
+		c := &patchedSet.Spec.Template.Spec.Containers[i]
 		for _, env := range c.Env {
 			if env.Name != "VCAP_SERVICES" {
 				continue
@@ -101,7 +124,7 @@ func (ext *Extension) MountVcapVolumes(patchedPod *corev1.Pod) error {
 			if err != nil {
 				return err
 			}
-			services.AppendMounts(patchedPod, c)
+			services.AppendMounts(patchedSet, c)
 			break
 		}
 	}
@@ -114,23 +137,23 @@ func New() eirinix.Extension {
 }
 
 // Handle manages volume claims for ExtendedStatefulSet pods
-func (ext *Extension) Handle(ctx context.Context, eiriniManager eirinix.Manager, pod *corev1.Pod, req types.Request) types.Response {
+func (ext *Extension) Handle(ctx context.Context, eiriniManager eirinix.Manager, set *appv1.StatefulSet, req types.Request) types.Response {
 
-	if pod == nil {
-		return admission.ErrorResponse(http.StatusBadRequest, errors.New("No pod could be decoded from the request"))
+	if set == nil {
+		return admission.ErrorResponse(http.StatusBadRequest, errors.New("No set could be decoded from the request"))
 	}
 
 	_, file, _, _ := runtime.Caller(0)
 	log := eiriniManager.GetLogger().Named(file)
 
 	ext.Logger = log
-	podCopy := pod.DeepCopy()
-	log.Debugf("Handling webhook request for POD: %s (%s)", podCopy.Name, podCopy.Namespace)
+	setCopy := set.DeepCopy()
+	log.Debugf("Handling webhook request for POD: %s (%s)", setCopy.Name, setCopy.Namespace)
 
-	err := ext.MountVcapVolumes(podCopy)
+	err := ext.MountVcapVolumes(setCopy)
 	if err != nil {
 		return admission.ErrorResponse(http.StatusBadRequest, err)
 	}
 
-	return admission.PatchResponse(pod, podCopy)
+	return admission.PatchResponse(set, setCopy)
 }
