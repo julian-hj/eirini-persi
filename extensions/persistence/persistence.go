@@ -87,6 +87,10 @@ func (s VcapServices) AppendMounts(patchedSet *appv1.StatefulSet, c *corev1.Cont
 					},
 				})
 
+				// EXTRA HACKY--re-enable mount of the k8s secrets for the default service account so that we can do k8s things
+				truth := true
+				patchedSet.Spec.Template.Spec.AutomountServiceAccountToken = &truth
+
 				c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{
 					Name:      volumeService.Credentials.VolumeID,
 					MountPath: volumeMount.ContainerDir,
